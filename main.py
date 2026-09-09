@@ -342,6 +342,211 @@ def build_table(data):
 # ارسال Rich Message به تلگرام
 # =========================================================
 
+
+def get_car_prices():
+    """
+    دریافت قیمت خودروهای منتخب از ایران‌جیب
+    """
+
+    import requests
+    from bs4 import BeautifulSoup
+    import re
+
+    URL = (
+        "https://www.iranjib.ir/showgroup/45/"
+        "%D9%82%DB%8C%D9%85%D8%AA-%D8%AE%D9%88%D8%AF%D8%B1%D9%88-%D8%AA%D9%88%D9%84%DB%8C%D8%AF-%D8%AF%D8%A7%D8%AE%D9%84"
+    )
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/151.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8",
+    }
+
+    try:
+
+        response = requests.get(
+            URL,
+            headers=headers,
+            timeout=30
+        )
+
+        response.raise_for_status()
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+
+        # -------------------------------------------------
+        # خودروهای موردنظر
+        # -------------------------------------------------
+
+        targets = {
+
+            "سورن TU5": [
+                "سورن (TU5P)"
+            ],
+
+            "۲۰۷ پانوراما": [
+                "پژو 207 دنده‌ای پانوراما"
+            ],
+
+            "دنا پلاس MT6": [
+                "دنا پلاس MT6"
+            ],
+
+            "تارا دستی V1": [
+                "تارا دستی V1"
+            ],
+
+        }
+
+        results = {}
+
+        # -------------------------------------------------
+        # پیدا کردن تمام جدول‌ها
+        # -------------------------------------------------
+
+        tables = soup.find_all("table")
+
+        for table in tables:
+
+            rows = table.find_all("tr")
+
+            for row in rows:
+
+                cells = row.find_all(
+                    ["td", "th"]
+                )
+
+                if len(cells) < 3:
+                    continue
+
+                cell_texts = [
+                    cell.get_text(
+                        " ",
+                        strip=True
+                    )
+                    for cell in cells
+                ]
+
+                car_name = cell_texts[0]
+
+                # -----------------------------------------
+                # بررسی خودرو
+                # -----------------------------------------
+
+                selected_key = None
+
+                for key, names in targets.items():
+
+                    for name in names:
+
+                        if name == car_name:
+
+                            selected_key = key
+                            break
+
+                    if selected_key:
+                        break
+
+                if not selected_key:
+                    continue
+
+                # -----------------------------------------
+                # قیمت بازار
+                # -----------------------------------------
+
+                market_price = cell_texts[1]
+
+                # -----------------------------------------
+                # تغییر
+                # -----------------------------------------
+
+                change_text = cell_texts[3] if len(cell_texts) >= 4 else ""
+
+                # -----------------------------------------
+                # استخراج درصد
+                # -----------------------------------------
+
+                percent_match = re.search(
+                    r"([+-]?\d+(?:\.\d+)?)\s*%",
+                    change_text
+                )
+
+                if percent_match:
+
+                    change_percent = float(
+                        percent_match.group(1)
+                    )
+
+                else:
+
+                    change_percent = 0.0
+
+                # -----------------------------------------
+                # استخراج مبلغ تغییر
+                # -----------------------------------------
+
+                numbers = re.findall(
+                    r"-?[\d,]+",
+                    change_text
+                )
+
+                change_amount = None
+
+                if len(numbers) >= 2:
+
+                    change_amount = numbers[-1]
+
+                # -----------------------------------------
+                # ذخیره
+                # -----------------------------------------
+
+                results[selected_key] = {
+
+                    "name": selected_key,
+
+                    "market_price": market_price,
+
+                    "change_percent": change_percent,
+
+                    "change_amount": change_amount,
+
+                }
+
+        # -------------------------------------------------
+        # گزارش
+        # -------------------------------------------------
+
+        print(
+            "IranJib car prices:"
+        )
+
+        for key, item in results.items():
+
+            print(
+                f"{key}: "
+                f"{item['market_price']} | "
+                f"{item['change_percent']}%"
+            )
+
+        return results
+
+    except Exception as e:
+
+        print(
+            f"IranJib Error: {e}"
+        )
+
+        return {}
+
+
+
 def send_telegram_rich(data):
 
     date_text = get_persian_datetime()
