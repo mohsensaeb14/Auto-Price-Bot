@@ -345,11 +345,9 @@ def build_gold_intrinsic_table(data):
 
         cells = [[
             {"text": RLM + "قیمت ذاتی طلا ۱۸", "is_header": True, "align": "right", "valign": "middle"},
-            {"text": RLM + "دلار محاسباتی ذاتی طلا", "is_header": True, "align": "right", "valign": "middle"},
             {"text": RLM + "مقدار حباب", "is_header": True, "align": "right", "valign": "middle"},
         ], [
             {"text": RLM + to_persian_number(f"{intrinsic_price:,.0f}") + " تومان", "align": "right", "valign": "middle"},
-            {"text": RLM + to_persian_number(f"{dollar_price:,.0f}") + " تومان", "align": "right", "valign": "middle"},
             {"text": RLM + bubble_text, "align": "right", "valign": "middle"},
         ]]
 
