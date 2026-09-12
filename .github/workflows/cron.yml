@@ -1,12 +1,11 @@
+```yaml
 name: Auto Price Bot
 
 on:
-  schedule:
-    - cron: '*/16 * * * *'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   run-bot:
@@ -27,5 +26,8 @@ jobs:
           pip install requests pytz jdatetime
 
       - name: Run script
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python main.py
+```
