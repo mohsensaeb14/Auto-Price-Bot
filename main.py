@@ -49,7 +49,8 @@ def get_data():
     response = requests.get(API_URL, headers=headers, timeout=30)
     response.raise_for_status()
     data = response.json()
-
+    print("API status:", response.status_code, flush=True)
+    print("API response:", json.dumps(data, ensure_ascii=False)[:12000], flush=True)
     if not isinstance(data, dict):
         raise ValueError(f"ساختار پاسخ API غیرمنتظره است: {type(data).__name__}")
 
