@@ -1,3 +1,4 @@
+```yaml
 name: Auto Price Bot
 
 on:
@@ -13,6 +14,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -26,6 +29,18 @@ jobs:
 
       - name: Run script
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: python main.py
+
+      - name: Save daily price baseline
         run: |
-          python main.py
+          if [[ -n "$(git status --porcelain -- price_baseline.json)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add price_baseline.json
+            git commit -m "Update daily price baseline"
+            git push
+          else
+            echo "No baseline changes to save."
+          fi
+```
