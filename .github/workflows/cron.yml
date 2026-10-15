@@ -1,4 +1,4 @@
-```yaml
+yaml
 name: Auto Price Bot
 
 on:
@@ -43,4 +43,3 @@ jobs:
           else
             echo "No baseline changes to save."
           fi
-```
