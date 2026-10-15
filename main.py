@@ -40,45 +40,54 @@ def to_persian_number(value):
 # دریافت اطلاعات از API
 # =========================================================
 
+
 def get_data():
     headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/151.0.0.0 Safari/537.36"
-        ),
+        "User-Agent": "Mozilla/5.0",
         "Accept": "application/json",
+        "Cache-Control": "no-cache",
     }
 
-    response = requests.get(API_URL, headers=headers, timeout=30)
+    response = requests.get(
+        API_URL,
+        headers=headers,
+        timeout=30
+    )
+
+    print(f"API HTTP status: {response.status_code}", flush=True)
     response.raise_for_status()
-    return response.json()
 
+    data = response.json()
 
-# =========================================================
-# پیدا کردن آیتم موردنظر
-# =========================================================
+    print(f"API response type: {type(data).__name__}", flush=True)
 
-def find_item(items, target_name):
-    if not items:
-        return None
+    if not isinstance(data, dict):
+        raise ValueError("پاسخ API یک JSON object نیست.")
 
-    for item in items:
-        name = str(item.get("name", "")).strip()
-        if name == target_name:
-            return item
+    print(f"API keys: {list(data.keys())}", flush=True)
 
-    for item in items:
-        name = str(item.get("name", "")).strip()
-        if target_name in name:
-            return item
+    for section in ("gold", "currency"):
+        items = data.get(section)
 
-    return None
+        if not isinstance(items, list):
+            print(
+                f"هشدار: بخش {section} موجود نیست یا لیست نیست.",
+                flush=True
+            )
+            continue
 
+        print(f"{section}: {len(items)} items", flush=True)
 
-# =========================================================
-# فرمت قیمت و تغییرات
-# =========================================================
+        for item in items[:30]:
+            if isinstance(item, dict):
+                print(
+                    f"item name={item.get('name')!r}, "
+                    f"price={item.get('price')!r}",
+                    flush=True
+                )
+
+    return data
+
 
 def format_price(price, is_ounce=False):
     try:
