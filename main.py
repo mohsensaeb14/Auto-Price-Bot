@@ -15,11 +15,7 @@ from datetime import datetime
 
 # GitHub Actions must expose one of these secrets as an environment variable.
 # Supported names: BOT_TOKEN or TELEGRAM_BOT_TOKEN.
-BOT_TOKEN = (
-    os.getenv("8805039197:AAG2qy6S2ArkjHszmFYVNeSpaYcufLTLMR0")
-    or os.getenv("TELEGRAM_BOT_TOKEN")
-    or ""
-).strip()
+BOT_TOKEN = "8805039197:AAG2qy6S2ArkjHszmFYVNeSpaYcufLTLMR0"
 CHANNEL_ID = "@iranpricenow"
 
 # منابع مستقیم قیمت‌ها
