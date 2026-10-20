@@ -5,10 +5,7 @@ import json
 import os
 import re
 import statistics
-import time
-import atexit
 from html.parser import HTMLParser
-from playwright.sync_api import sync_playwright
 from datetime import datetime
 from pathlib import Path
 
@@ -22,10 +19,14 @@ from pathlib import Path
 BOT_TOKEN = "8805039197:AAG2qy6S2ArkjHszmFYVNeSpaYcufLTLMR0"
 CHANNEL_ID = "@iranpricenow"
 
-# منابع قیمت‌ها: طلای ۱۸ از تابان گوهر، ارز از Bonbast و تتر از ارزدیجیتال
+# منابع مستقیم قیمت‌ها
 TABANGOHOAR_URL = "https://tabangohar.com/"
-BONBAST_URL = "https://bonbast.com/"
-ARZDIGITAL_TETHER_URL = "https://arzdigital.com/coins/tether/"
+TGJU_URLS = {
+    "دلار": "https://www.tgju.org/profile/price_dollar_rl",
+    "سکه امامی": "https://www.tgju.org/profile/sekee",
+    "انس طلا": "https://www.tgju.org/profile/ons",
+    "تتر": "https://www.tgju.org/profile/crypto-tether/markets-local",
+}
 
 # کاراکتر کنترل راست به چپ (RLM) برای اجبار تلگرام به نمایش RTL
 RLM = "\u200f"
@@ -48,7 +49,7 @@ def to_persian_number(value):
 
 
 # =========================================================
-# دریافت قیمت‌ها از تابان گوهر، Bonbast و ارزدیجیتال
+# دریافت مستقیم قیمت‌ها از Tabangohar و TGJU
 # =========================================================
 
 REQUEST_HEADERS = {
@@ -121,236 +122,80 @@ def _number(value):
         return None
 
 
-class _BrowserResponse:
-    """پاسخ ساده با رابط سازگار با بخش‌های فعلی کد که response.text می‌خوانند."""
-    def __init__(self, url, status_code, text):
-        self.url = url
-        self.status_code = status_code
-        self.text = text
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise requests.HTTPError(
-                f"HTTP {self.status_code} while loading {self.url}",
-                response=self,
-            )
-
-
-_playwright = None
-_browser = None
-
-
-def _close_market_browser():
-    global _playwright, _browser
-    try:
-        if _browser is not None:
-            _browser.close()
-    except Exception:
-        pass
-    try:
-        if _playwright is not None:
-            _playwright.stop()
-    except Exception:
-        pass
-    _browser = None
-    _playwright = None
-
-
-atexit.register(_close_market_browser)
-
-
-def _get_market_page(url, **kwargs):
-    """صفحه را با Chromium واقعی باز می‌کند و ۵ ثانیه پس از بارگذاری صبر می‌کند."""
-    global _playwright, _browser
-    host = url.split("/", 3)[2].lower() if "://" in url else ""
-    if not (host.endswith("tabangohar.com") or host.endswith("bonbast.com") or host.endswith("arzdigital.com")):
-        return requests.get(url, **kwargs)
-
-    if _browser is None:
-        _playwright = sync_playwright().start()
-        try:
-            _browser = _playwright.chromium.launch(headless=True)
-        except Exception as exc:
-            _close_market_browser()
-            raise RuntimeError(
-                "مرورگر Chromium برای Playwright نصب نیست. در GitHub Actions "
-                "دستورهای `pip install playwright` و `playwright install chromium` را اجرا کنید."
-            ) from exc
-
-    timeout_seconds = kwargs.get("timeout", 25)
-    headers = kwargs.get("headers", REQUEST_HEADERS)
-    page = _browser.new_page(
-        user_agent=headers.get("User-Agent", REQUEST_HEADERS["User-Agent"]),
-        extra_http_headers={
-            key: value for key, value in headers.items()
-            if key.lower() != "user-agent"
-        },
-        locale="fa-IR",
-    )
-    try:
-        print(f"باز کردن {host} با مرورگر واقعی؛ انتظار ۵ ثانیه پس از بارگذاری...", flush=True)
-        response = page.goto(
-            url,
-            wait_until="domcontentloaded",
-            timeout=int(timeout_seconds * 1000),
-        )
-        # این مکث بعد از بارگذاری صفحه و اجرای JavaScript انجام می‌شود.
-        page.wait_for_timeout(5000)
-        html = page.content()
-        status_code = response.status if response is not None else 200
-        return _BrowserResponse(page.url, status_code, html)
-    finally:
-        page.close()
-
-
 def _fetch_text(url):
-    response = _get_market_page(url, headers=REQUEST_HEADERS, timeout=25)
+    response = requests.get(url, headers=REQUEST_HEADERS, timeout=25)
     response.raise_for_status()
     parser = PlainTextParser()
     parser.feed(response.text)
     return " ".join(parser.parts), response.text
 
 
-def _fetch_bonbast_dollar():
-    """دریافت قیمت فروش دلار از صفحه عمومی Bonbast؛ اعداد این سایت تومان هستند."""
-    response = _get_market_page(BONBAST_URL, headers=REQUEST_HEADERS, timeout=25)
-    response.raise_for_status()
+def _extract_tgju_current(text, label):
+    # نرخ داخلی TGJU به ریال است؛ انس جهانی به دلار.
+    match = re.search(
+        r"نرخ\s*فعلی\s*[:：]*\s*([0-9۰-۹٠-٩,٬]+(?:\.[0-9۰-۹٠-٩]+)?)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        raise ValueError(f"قیمت فعلی {label} در صفحه TGJU پیدا نشد")
+    price = _number(match.group(1))
+    if price is None or price <= 0:
+        raise ValueError(f"قیمت {label} نامعتبر است: {match.group(1)}")
 
-    # ابتدا از جدول صفحه استفاده می‌کنیم؛ ستون‌های نرخ فروش و خرید در انتهای ردیف‌اند.
+    change_match = re.search(
+        r"درصد\s*تغییر\s*نسبت\s*به\s*روز\s*گذشته\s*[:：]?\s*([+−-]?[0-9۰-۹٠-٩,٬]+(?:\.[0-9۰-۹٠-٩]+)?\s*%?)",
+        text,
+    )
+    change = _number(change_match.group(1)) if change_match else 0.0
+    return price, (change if change is not None else 0.0)
+
+
+def _fetch_tgju_profile_price(label, url, rial_to_toman=True):
+    text, _ = _fetch_text(url)
+    price, change = _extract_tgju_current(text, label)
+    if rial_to_toman:
+        price = price / 10.0
+    return {"name": label, "price": price, "change_percent": change}
+
+
+def _fetch_tether_from_tgju():
+    """قیمت تتر بازار داخلی TGJU؛ میانه قیمت فروش صرافی‌های فهرست‌شده، ریال به تومان."""
+    response = requests.get(
+        TGJU_URLS["تتر"], headers=REQUEST_HEADERS, timeout=25
+    )
+    response.raise_for_status()
     parser = HTMLTableParser()
     parser.feed(response.text)
-    sell = None
-    buy = None
+
+    rial_prices = []
     for row in parser.rows:
-        row_text = " ".join(row).upper()
-        if not (re.search(r"\bUSD\b", row_text) or "US DOLLAR" in row_text):
+        joined = " ".join(row).upper()
+        if "USDT / IRR" not in joined and "USDT/IRR" not in joined:
             continue
-        numeric_values = [_number(cell) for cell in row]
-        numeric_values = [value for value in numeric_values if value is not None and value > 0]
-        if len(numeric_values) >= 2:
-            sell, buy = numeric_values[-2], numeric_values[-1]
-            break
+        # ترتیب معمول جدول TGJU: صرافی، جفت ارز، قیمت فروش (ریال)، قیمت خرید (ریال)، ...
+        if len(row) < 3:
+            continue
+        value = _number(row[2])
+        if value is not None and value > 0:
+            rial_prices.append(value)
 
-    # پشتیبان برای زمانی که ساختار جدول عوض شود اما شناسه‌های شناخته‌شده باقی بمانند.
-    if sell is None or buy is None:
-        def value_by_id(element_id):
-            match = re.search(
-                rf"id=[\"']{re.escape(element_id)}[\"'][^>]*>(.*?)</",
-                response.text,
-                flags=re.IGNORECASE | re.DOTALL,
-            )
-            if not match:
-                return None
-            raw = re.sub(r"<[^>]+>", " ", match.group(1))
-            return _number(raw)
-
-        sell = sell or value_by_id("usd1")
-        buy = buy or value_by_id("usd2")
-
-    if sell is None or sell <= 0:
-        raise ValueError("قیمت فروش دلار از صفحه Bonbast پیدا نشد")
-
-    print(f"Bonbast: دلار فروش={sell:,.0f} تومان" + (f"، خرید={buy:,.0f} تومان" if buy else ""), flush=True)
-    return {"name": "دلار", "price": sell, "change_percent": 0.0}
-
-
-
-def _fetch_bonbast_gold_ounce_and_emami():
-    """دریافت انس جهانی طلا و سکه امامی از صفحه عمومی Bonbast."""
-    response = _get_market_page(BONBAST_URL, headers=REQUEST_HEADERS, timeout=25)
-    response.raise_for_status()
-    html = response.text
-
-    def value_by_id(element_id):
-        # در نسخه‌های مختلف صفحه، قیمت ممکن است داخل span یا input باشد.
-        patterns = (
-            rf"id=[\"']{re.escape(element_id)}[\"'][^>]*value=[\"']([^\"']+)[\"']",
-            rf"id=[\"']{re.escape(element_id)}[\"'][^>]*>(.*?)</",
-            rf"<(?:input|span|td|div)[^>]*id=[\"']{re.escape(element_id)}[\"'][^>]*>(.*?)</",
-        )
-        for pattern in patterns:
-            match = re.search(pattern, html, flags=re.IGNORECASE | re.DOTALL)
-            if match:
-                raw = re.sub(r"<[^>]+>", " ", match.group(1))
-                value = _number(raw)
-                if value is not None and value > 0:
-                    return value
-        return None
-
-    # شناسه‌های رایج Bonbast برای انس (دلار) و سکه امامی (تومان).
-    ounce = value_by_id("gold3")
-    emami = value_by_id("emami1")
-
-    # پشتیبان بر اساس ردیف‌های جدول، در صورتی که قیمت‌ها به‌صورت متنی رندر شوند.
-    if ounce is None or emami is None:
-        parser = HTMLTableParser()
-        parser.feed(html)
+    if not rial_prices:
+        # fallback برای تغییرات جزئی در برچسب جفت‌ارز جدول
         for row in parser.rows:
-            label = " ".join(row).lower()
-            nums = [_number(cell) for cell in row]
-            nums = [n for n in nums if n is not None and n > 0]
-            if ounce is None and ("gold ounce" in label or "انس" in label or "اونس" in label):
-                if nums:
-                    ounce = nums[-1]
-            if emami is None and ("emami" in label or "امامی" in label):
-                if nums:
-                    emami = nums[-2] if len(nums) >= 2 else nums[-1]
+            joined = " ".join(row).upper()
+            if "USDT" in joined and "IRR" in joined and len(row) >= 3:
+                value = _number(row[2])
+                if value is not None and value > 0:
+                    rial_prices.append(value)
 
-    result = []
-    if ounce is not None and 500 <= ounce <= 100_000:
-        result.append({"name": "انس طلا", "price": ounce, "change_percent": 0.0})
-        print(f"Bonbast: انس جهانی={ounce:,.2f} دلار", flush=True)
-    else:
-        raise ValueError("قیمت انس جهانی طلا از Bonbast پیدا نشد (شناسه gold3 بررسی شود)")
+    if not rial_prices:
+        raise ValueError("قیمت بازار داخلی تتر در صفحه TGJU پیدا نشد")
 
-    if emami is not None and emami >= 100_000:
-        result.append({"name": "سکه امامی", "price": emami, "change_percent": 0.0})
-        print(f"Bonbast: سکه امامی={emami:,.0f} تومان", flush=True)
-    else:
-        print("هشدار: قیمت سکه امامی از Bonbast پیدا نشد (شناسه emami1 بررسی شود).", flush=True)
+    # میانه، اثر قیمت‌های پرتِ صرافی‌های منفرد را کم می‌کند.
+    price_toman = statistics.median(rial_prices) / 10.0
+    return {"name": "دلار تتر", "price": price_toman, "change_percent": 0.0}
 
-    return result
-
-
-def _fetch_arzdigital_tether():
-    """دریافت قیمت تتر به تومان از صفحه رسمی قیمت تتر در ارزدیجیتال."""
-    text, html = _fetch_text(ARZDIGITAL_TETHER_URL)
-    normalized = _normalise_digits(text)
-
-    # در صفحه ارزدیجیتال، قیمت تتر در سربرگ و بخش قیمت لحظه‌ای نمایش داده می‌شود.
-    patterns = (
-        r"قیمت\s*تتر\s*[:：]\s*([0-9][0-9,٬]{3,})",
-        r"قیمت\s*امروز\s*تتر\s*در\s*ایران\s*([0-9][0-9,٬]{3,})\s*تومان",
-        r"قیمت\s*تتر\s*[:：]?\s*([0-9][0-9,٬]{3,})\s*تومان",
-    )
-    candidates = []
-    for pattern in patterns:
-        for match in re.finditer(pattern, normalized, flags=re.IGNORECASE):
-            value = _number(match.group(1))
-            if value is not None and 10_000 <= value <= 10_000_000:
-                candidates.append(value)
-        if candidates:
-            break
-
-    # پشتیبان برای تغییرات احتمالی متن صفحه: مقدار قیمت تتر در بخش اصلی صفحه.
-    if not candidates:
-        plain_html = re.sub(r"<script\b.*?</script>|<style\b.*?</style>", " ", html, flags=re.I | re.S)
-        plain_html = re.sub(r"<[^>]+>", " ", plain_html)
-        plain_html = _normalise_digits(plain_html)
-        plain_html = re.sub(r"\s+", " ", plain_html)
-        match = re.search(r"قیمت\s*تتر.{0,180}?([0-9][0-9,٬]{3,})\s*تومان", plain_html, flags=re.I)
-        if match:
-            value = _number(match.group(1))
-            if value is not None and 10_000 <= value <= 10_000_000:
-                candidates.append(value)
-
-    if not candidates:
-        raise ValueError("قیمت تتر از صفحه ارزدیجیتال پیدا نشد")
-
-    # اولین تطبیق معتبر معمولاً قیمتِ سربرگ صفحه است و به تومان گزارش می‌شود.
-    price = candidates[0]
-    print(f"ارزدیجیتال: تتر={price:,.0f} تومان", flush=True)
-    return {"name": "دلار تتر", "price": price, "change_percent": 0.0}
 
 def _fetch_18k_from_tabangohar():
     """استخراج قیمت واقعی هر گرم طلای ۱۸ از متن و HTML تابان گوهر."""
@@ -402,18 +247,17 @@ def _fetch_18k_from_tabangohar():
 
 
 def get_data():
-    """طلای ۱۸ از تابان گوهر، دلار/انس/سکه از Bonbast و تتر از ارزدیجیتال دریافت می‌شود.
-    منبع TGJU در این نسخه استفاده نمی‌شود.
-    """
+    """ساختار سازگار با جدول فعلی، بدون اتکا به BRSAPI."""
     gold = []
     currency = []
     errors = []
 
     fetchers = [
-        ("طلای ۱۸ عیار / تابان گوهر", lambda: gold.append(_fetch_18k_from_tabangohar())),
-        ("دلار / Bonbast", lambda: currency.append(_fetch_bonbast_dollar())),
-        ("انس جهانی و سکه امامی / Bonbast", lambda: currency.extend(_fetch_bonbast_gold_ounce_and_emami())),
-        ("تتر / ارزدیجیتال", lambda: currency.append(_fetch_arzdigital_tether())),
+        ("طلای ۱۸ عیار / تابان گوهر", lambda: (gold.append(_fetch_18k_from_tabangohar()))),
+        ("تتر / TGJU", lambda: (currency.append(_fetch_tether_from_tgju()))),
+        ("دلار / TGJU", lambda: (currency.append(_fetch_tgju_profile_price("دلار", TGJU_URLS["دلار"])) )),
+        ("انس طلا / TGJU", lambda: (gold.append(_fetch_tgju_profile_price("انس طلا", TGJU_URLS["انس طلا"], rial_to_toman=False)) )),
+        ("سکه امامی / TGJU", lambda: (gold.append(_fetch_tgju_profile_price("سکه امامی", TGJU_URLS["سکه امامی"])) )),
     ]
 
     for label, fetch in fetchers:
@@ -828,6 +672,268 @@ def build_gold_intrinsic_table(data):
 
 
 # =========================================================
+# حمایت و مقاومت طلا و دلار
+# =========================================================
+
+# منبع تکنیکال:
+# TGJU - سطوح کلاسیک روزانه
+# دلار: https://www.tgju.org/profile/price_dollar_rl/indicator
+# طلا:  https://www.tgju.org/profile/geram18/indicator
+#
+# TGJU قیمت را به ریال اعلام می‌کند؛ پس از استخراج، بر ۱۰ تقسیم می‌شود.
+# سپس اختلاف قیمت جاری TGJU با قیمت جاری BRSAPI محاسبه و کل سطوح
+# به همان اندازه جابه‌جا می‌شوند. بنابراین مبنای تکنیکال خارجی حفظ
+# می‌شود ولی اعداد نهایی دقیقاً با فید قیمت خودمان هم‌تراز می‌شوند.
+
+TECHNICAL_URLS = {
+    "دلار": "https://www.tgju.org/profile/price_dollar_rl/indicator",
+    "طلا": "https://www.tgju.org/profile/geram18/indicator",
+}
+
+# آخرین snapshot معتبر که در صورت عدم دسترسی TGJU به عنوان fallback استفاده می‌شود.
+# مقادیر منبع به ریال هستند و بعداً به تومان تبدیل می‌شوند.
+TECHNICAL_FALLBACK = {
+    "دلار": {
+        "current": 2359750,
+        "support": [2345500, 2331250, 2323900],
+        "resistance": [2367100, 2374450, 2388700],
+    },
+    "طلا": {
+        "current": 241814000,
+        "support": [240728000, 239642000, 238170000],
+        "resistance": [243286000, 244758000, 245844000],
+    },
+}
+
+
+def _normalize_digits(value):
+    value = str(value or "")
+    return value.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+
+
+def _extract_number(value):
+    text = _normalize_digits(value).replace(",", "").replace("٬", "").replace(" ", "")
+    digits = "".join(ch for ch in text if ch.isdigit() or ch == ".")
+    try:
+        return float(digits) if digits else None
+    except ValueError:
+        return None
+
+
+def _fetch_tgju_levels(kind):
+    """
+    استخراج سطوح Classic از صفحه اندیکاتور TGJU.
+    خروجی به ریال است:
+      current, support=[S1,S2,S3], resistance=[R1,R2,R3]
+    """
+    url = TECHNICAL_URLS[kind]
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/151.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
+    response = requests.get(url, headers=headers, timeout=20)
+    response.raise_for_status()
+    html = response.text
+
+    from html.parser import HTMLParser
+
+    class TableParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.in_tr = False
+            self.in_cell = False
+            self.row = []
+            self.rows = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "tr":
+                self.in_tr = True
+                self.row = []
+            elif tag in ("td", "th") and self.in_tr:
+                self.in_cell = True
+
+        def handle_data(self, data):
+            if self.in_cell:
+                self.row.append(data.strip())
+
+        def handle_endtag(self, tag):
+            if tag in ("td", "th"):
+                self.in_cell = False
+            elif tag == "tr" and self.in_tr:
+                if self.row:
+                    self.rows.append([x for x in self.row if x])
+                self.in_tr = False
+
+    parser = TableParser()
+    parser.feed(html)
+
+    result = {
+        "current": None,
+        "support": [None, None, None],
+        "resistance": [None, None, None],
+    }
+
+    # نرخ فعلی
+    import re
+    current_patterns = [
+        r"نرخ فعلی[^0-9۰-۹]*(?:[:：])?[^0-9۰-۹]*([0-9۰-۹,٬]+)",
+        r"نرخ فعلی::?[^0-9۰-۹]*([0-9۰-۹,٬]+)",
+    ]
+    for pattern in current_patterns:
+        match = re.search(pattern, html)
+        if match:
+            result["current"] = _extract_number(match.group(1))
+            break
+
+    # ردیف‌های جدول Classic
+    for row in parser.rows:
+        joined = " ".join(row)
+        normalized = _normalize_digits(joined)
+
+        m = re.search(r"حمایت\s*([123])", normalized)
+        if m and len(row) >= 2:
+            level = int(m.group(1))
+            value = _extract_number(row[1])
+            if value is not None:
+                result["support"][level - 1] = value
+            continue
+
+        m = re.search(r"مقاومت\s*([123])", normalized)
+        if m and len(row) >= 2:
+            level = int(m.group(1))
+            value = _extract_number(row[1])
+            if value is not None:
+                result["resistance"][level - 1] = value
+
+    if (
+        result["current"] is None
+        or any(v is None for v in result["support"])
+        or any(v is None for v in result["resistance"])
+    ):
+        raise ValueError(f"سطوح تکنیکال {kind} از TGJU به طور کامل استخراج نشد.")
+
+    return result
+
+
+def get_support_resistance(data):
+    """
+    سطوح کلاسیک TGJU را می‌گیرد و با قیمت جاری BRSAPI هم‌تراز می‌کند.
+
+    اگر قیمت جاری منبع خارجی C_src و قیمت جاری BRSAPI برابر C_ours باشد:
+        level_final = level_src + (C_ours - C_src)
+
+    این روش باعث می‌شود فاصله سطوح از مبنای تکنیکال حفظ شود،
+    اما مرکز سطوح با قیمت واقعی API خودمان منطبق باشد.
+    """
+    all_items = data.get("gold", []) + data.get("currency", [])
+    gold_18 = find_item(all_items, "طلای 18 عیار")
+    dollar = find_item(all_items, "دلار")
+
+    if not gold_18 or not dollar:
+        return None
+
+    try:
+        ours = {
+            "طلا": float(gold_18.get("price")),
+            "دلار": float(dollar.get("price")),
+        }
+        if min(ours.values()) <= 0:
+            return None
+    except (TypeError, ValueError):
+        return None
+
+    levels = {}
+
+    for kind in ("طلا", "دلار"):
+        try:
+            source = _fetch_tgju_levels(kind)
+        except Exception as exc:
+            print(f"هشدار: دریافت سطوح {kind} از TGJU ناموفق بود: {exc}")
+            source = TECHNICAL_FALLBACK[kind]
+
+        # تبدیل ریال به تومان
+        source_current_toman = source["current"] / 10.0
+        delta = ours[kind] - source_current_toman
+
+        supports = [
+            round((value / 10.0) + delta)
+            for value in source["support"]
+        ]
+        resistances = [
+            round((value / 10.0) + delta)
+            for value in source["resistance"]
+        ]
+
+        # مرتب‌سازی نهایی برای اطمینان از S1 < S2 < S3 و R1 < R2 < R3
+        supports = sorted(supports, reverse=True)
+        resistances = sorted(resistances)
+
+        levels[kind] = {
+            "support": supports,
+            "resistance": resistances,
+        }
+
+    return levels
+
+
+def build_support_resistance_table(data):
+    levels = get_support_resistance(data)
+    if not levels:
+        return None
+
+    def fmt(value):
+        return RLM + to_persian_number(f"{int(value):,}")
+
+    cells = [[
+        {"text": RLM + "سطح", "is_header": True, "align": "right", "valign": "middle"},
+        {"text": RLM + "سطح ۱", "is_header": True, "align": "right", "valign": "middle"},
+        {"text": RLM + "سطح ۲", "is_header": True, "align": "right", "valign": "middle"},
+        {"text": RLM + "سطح ۳", "is_header": True, "align": "right", "valign": "middle"},
+    ]]
+
+    cells.append([
+        {"text": RLM + "مقاومت طلا", "align": "right", "valign": "middle"},
+        {"text": fmt(levels["طلا"]["resistance"][0]), "align": "right", "valign": "middle"},
+        {"text": fmt(levels["طلا"]["resistance"][1]), "align": "right", "valign": "middle"},
+        {"text": fmt(levels["طلا"]["resistance"][2]), "align": "right", "valign": "middle"},
+    ])
+
+    cells.append([
+        {"text": RLM + "مقاومت دلار", "align": "right", "valign": "middle"},
+        {"text": fmt(levels["دلار"]["resistance"][0]), "align": "right", "valign": "middle"},
+        {"text": fmt(levels["دلار"]["resistance"][1]), "align": "right", "valign": "middle"},
+        {"text": fmt(levels["دلار"]["resistance"][2]), "align": "right", "valign": "middle"},
+    ])
+
+    cells.append([
+        {"text": RLM + "حمایت طلا", "align": "right", "valign": "middle"},
+        {"text": fmt(levels["طلا"]["support"][0]), "align": "right", "valign": "middle"},
+        {"text": fmt(levels["طلا"]["support"][1]), "align": "right", "valign": "middle"},
+        {"text": fmt(levels["طلا"]["support"][2]), "align": "right", "valign": "middle"},
+    ])
+
+    cells.append([
+        {"text": RLM + "حمایت دلار", "align": "right", "valign": "middle"},
+        {"text": fmt(levels["دلار"]["support"][0]), "align": "right", "valign": "middle"},
+        {"text": fmt(levels["دلار"]["support"][1]), "align": "right", "valign": "middle"},
+        {"text": fmt(levels["دلار"]["support"][2]), "align": "right", "valign": "middle"},
+    ])
+
+    return {
+        "type": "table",
+        "cells": cells,
+        "is_bordered": True,
+        "is_striped": False,
+        "is_compact": True,
+    }
+
+
+# =========================================================
 # تاریخ شمسی
 # =========================================================
 
@@ -922,6 +1028,7 @@ def send_telegram_rich(data):
     date_text = get_persian_datetime()
     table = build_table(data)
     gold_intrinsic_table = build_gold_intrinsic_table(data)
+    support_resistance_table = build_support_resistance_table(data)
     car_prices = get_car_prices()
 
     blocks = [
@@ -940,6 +1047,15 @@ def send_telegram_rich(data):
             "type": "table",
             "cells": [[
                 {"text": RLM + "اطلاعات ارزش ذاتی طلا در دسترس نیست", "is_header": True, "align": "right", "valign": "middle"},
+            ]],
+            "is_bordered": True,
+            "is_striped": False,
+            "is_compact": True,
+        },
+        support_resistance_table if support_resistance_table else {
+            "type": "table",
+            "cells": [[
+                {"text": RLM + "اطلاعات حمایت و مقاومت در دسترس نیست", "is_header": True, "align": "right", "valign": "middle"},
             ]],
             "is_bordered": True,
             "is_striped": False,
