@@ -19,7 +19,8 @@ from pathlib import Path
 
 # GitHub Actions must expose one of these secrets as an environment variable.
 # Supported names: BOT_TOKEN or TELEGRAM_BOT_TOKEN.
-BOT_TOKEN = "8805039197:AAG2qy6S2ArkjHszmFYVNeSpaYcufLTLMR0"CHANNEL_ID = "@iranpricenow"
+BOT_TOKEN = "8805039197:AAG2qy6S2ArkjHszmFYVNeSpaYcufLTLMR0"
+CHANNEL_ID = "@iranpricenow"
 # منابع قیمت‌ها: طلای ۱۸ از تابان گوهر، ارز از Bonbast و تتر از ارزدیجیتال
 TABANGOHOAR_URL = "https://tabangohar.com/"
 BONBAST_URL = "https://bonbast.com/"
