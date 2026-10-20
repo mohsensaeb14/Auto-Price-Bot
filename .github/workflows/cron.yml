@@ -16,6 +16,11 @@ jobs:
         with:
           persist-credentials: true
 
+      - name: Install Playwright
+        run: pip install playwright
+
+      - name: Install Chromium
+        run: python -m playwright install chromium    
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
